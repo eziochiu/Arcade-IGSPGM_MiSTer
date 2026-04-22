@@ -17,10 +17,11 @@ module IGS023_FG(
     output              vram_master,
     
     // ROM interface
+    output            rom_master,
     output reg [23:0] rom_address,
     input      [31:0] rom_data,
-    output reg        rom_read,
-    input             rom_ready
+    output reg        rom_req,
+    input             rom_ack
 );
 
 // Reads 57 FG tiles during hblank and fills a line buffer with data
@@ -37,6 +38,7 @@ read_state_t read_state = READ0;
 
 reg reading_vram;
 assign vram_master = reading_vram;
+assign rom_master = reading_vram && (read_state != DONE);
 
 reg [6:0] vram_row_addr;
 reg [7:0] tile_addr;
@@ -58,6 +60,7 @@ reg [2:0] pixel_idx;
 assign color_out = {palette_buffer[buffer_idx], color_buffer[buffer_idx][4*pixel_idx +: 4]};
 
 reg [8:0] read_counter;
+reg first_read;
 always_ff @(posedge clk) begin
     if (start_read) begin
         reading_vram <= 1;
@@ -67,6 +70,8 @@ always_ff @(posedge clk) begin
         read_counter <= 0;
         buffer_idx <= 0;
         pixel_idx <= x[2:0];
+        rom_req <= rom_ack;
+        first_read <= 1;
     end else if (reading_vram) begin
         if (ce_33m) begin
             read_counter <= read_counter + 1;
@@ -94,11 +99,11 @@ always_ff @(posedge clk) begin
             READ3: begin
                 tile_attrib[7:0] <= vram_din;
                 tile_addr <= tile_addr + 1;
-                read_state <= rom_read ? ROM_WAIT : ROM_REQ;
+                first_read <= 0;
+                read_state <= first_read ? ROM_REQ : ROM_WAIT;
             end
             ROM_WAIT: begin
-                if (rom_ready) begin
-                    rom_read <= 0;
+                if (rom_req == rom_ack) begin
                     palette_buffer[buffer_idx] <= palette;
                     color_buffer[buffer_idx] <= flip_x
                         ? { rom_data[3:0], rom_data[7:4], rom_data[11:8], rom_data[15:12], rom_data[19:16], rom_data[23:20], rom_data[27:24], rom_data[31:28] }
@@ -114,7 +119,7 @@ always_ff @(posedge clk) begin
             end
             ROM_REQ: begin
                 rom_address <= { 3'd0, tile_code, tile_attrib[7] ? ~y[2:0] : y[2:0], 2'd0 };
-                rom_read <= 1;
+                rom_req <= ~rom_req;
                 read_state <= READ0;
                 flip_x <= tile_attrib[6];
                 palette <= tile_attrib[5:1];

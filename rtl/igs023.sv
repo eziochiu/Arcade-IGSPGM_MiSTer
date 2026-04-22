@@ -1,49 +1,3 @@
-module tile_shifter #(
-    parameter TILE_WIDTH=8,
-    parameter BPP=4,
-    parameter LENGTH=4
-    )
-(
-    input                                         clk,
-    input                                         ce,
-
-    input                                         load,
-    input [$clog2(LENGTH)-1:0]                    load_index,
-    input [4:0]                                   load_color,
-    input [(TILE_WIDTH*BPP)-1:0]                    load_data,
-    input                                         load_flip,
-
-    input [$clog2(LENGTH)+$clog2(TILE_WIDTH)-1:0] tap,
-    output reg [4+BPP:0]                              dot_out
-);
-
-reg [4:0] color_buf[LENGTH];
-reg [(TILE_WIDTH*BPP)-1:0] pixel_buf[LENGTH];
-
-wire [$clog2(LENGTH)-1:0] tap_index = tap[$left(tap):$clog2(TILE_WIDTH)];
-wire [$clog2(TILE_WIDTH)-1:0] tap_pixel = tap[$clog2(TILE_WIDTH)-1:0];
-
-always_ff @(posedge clk) begin
-    if (load) begin
-
-        color_buf[load_index] <= load_color;
-        if (~load_flip) begin
-            int i;
-            for( i = 0; i < TILE_WIDTH; i = i + 1 ) begin
-                pixel_buf[load_index][(BPP * ((TILE_WIDTH-1) - i)) +: BPP] <= load_data[(BPP * i) +: BPP];
-            end
-        end else begin
-            pixel_buf[load_index] <= load_data;
-        end
-    end
-
-    if (ce) begin
-        dot_out <= { color_buf[tap_index], pixel_buf[tap_index][(BPP * tap_pixel) +: BPP] };
-    end
-end
-
-endmodule
-
 module IGS023 #(parameter SS_IDX=-1) (
     input clk,
     input ce_33m,
@@ -94,27 +48,6 @@ module IGS023 #(parameter SS_IDX=-1) (
     ssbus_if.slave ssbus
 );
 
-typedef enum bit [2:0]
-{
-    CPU_ACCESS,
-    FG_ATTRIB0,
-    FG_ATTRIB1,
-    BG_ATTRIB0,
-    BG_ATTRIB1
-} access_state_t;
-
-access_state_t idx_to_state[32] = '{
-    FG_ATTRIB0, FG_ATTRIB1, BG_ATTRIB0, BG_ATTRIB1, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS,
-    FG_ATTRIB0, FG_ATTRIB1, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS,
-    FG_ATTRIB0, FG_ATTRIB1, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS,
-    FG_ATTRIB0, FG_ATTRIB1, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS, CPU_ACCESS
-};
-
-access_state_t access_state;
-access_state_t next_access_state;
-
-
-
 reg [4:0] ce_pixel_shift;
 assign ce_pixel = ce_50m & ce_pixel_shift[4];
 wire ce_pixel_pre1 = ce_50m & ce_pixel_shift[3];
@@ -130,6 +63,9 @@ always_ff @(posedge clk) begin
         ce_pixel_shift <= {ce_pixel_shift[3:0], ce_pixel_shift[4]};
     end
 end
+
+assign rom_address = fg_rom_master ? fg_rom_address : bg_rom_address;
+assign rom_req = fg_rom_master ? fg_rom_req : bg_rom_req;
 
 reg dtack_n;
 reg prev_cs_n;
@@ -157,7 +93,6 @@ assign cpu_dtack_n = cpu_cs_n ? 0 : dtack_n;
 assign pal_dout = cpu_din[15:0];
 assign vram_dout = vram_addr[0] ? cpu_din[15:8] : cpu_din[7:0]; // little endian ordering in vram
 
-
 // 0 is the start of blanking
 reg [8:0] vcnt;
 reg [9:0] hcnt;
@@ -172,8 +107,10 @@ wire hblank = hcnt < 192;
 wire vsync = (vcnt >= 14 && vcnt < (14 + 8));
 wire vblank = vcnt < 38;
 
+reg prev_fg_vram_master;
 always @(posedge clk) begin
     fg_start_read <= 0;
+    bg_start_read <= 0;
 
     if (ce_pixel) begin
         hcnt <= hcnt + 1;
@@ -189,51 +126,30 @@ always @(posedge clk) begin
         if (hcnt == 638 && vcnt > 36 && vcnt < 261) begin
             fg_read_y <= logical_vcnt[7:0] + fg_y[7:0] + 8'd1;
             fg_start_read <= 1;
+            bg_read_y <= logical_vcnt[10:0] + bg_y[10:0] + 11'd1;
         end
+
+        prev_fg_vram_master <= fg_vram_master;
+        if (prev_fg_vram_master & ~fg_vram_master) bg_start_read <= 1;
     end
 end
 
 wire [10:0] bg_hofs = bg_x[10:0]; // + bg_rowscroll[10:0];
-wire [9:0] bg_dot;
+wire [9:0] bg_color;
+wire [14:0] bg_vram_addr;
+wire        bg_vram_master;
+wire [23:0] bg_rom_address;
+wire        bg_rom_req;
 wire [8:0] fg_color;
 wire [14:0] fg_vram_addr;
 wire        fg_vram_master;
+wire        fg_rom_master;
 wire [23:0] fg_rom_address;
-wire        fg_rom_read;
-reg         fg_rom_ready;
+wire        fg_rom_req;
 reg         fg_start_read;
 reg   [7:0] fg_read_y;
-reg [15:0] bg_rowscroll;
-reg [15:0] bg_code, bg_attrib;
-
-reg [(32*5)-1:0] bg_data;
-reg bg_load;
-reg [2:0] bg_rom_req;
-reg [23:0] bg_rom_address;
-
-reg [1:0] rom_req_ch;
-
-wire bg_flipx = bg_attrib[6];
-wire bg_flipy = bg_attrib[7];
-
-wire [10:0] bg_draw_hcnt = (logical_hcnt - bg_hofs);
-
-reg [1:0] bg_load_index;
-reg [10:0] bg_load_hcnt;
-
-tile_shifter #(
-    .TILE_WIDTH(32),
-    .BPP(5)
-    )bg_shift(
-    .clk, .ce(ce_pixel),
-    .tap(bg_draw_hcnt[6:0]),
-    .load_index(bg_load_hcnt[6:5]),
-    .load_data(bg_data),
-    .load_color(bg_attrib[5:1]),
-    .load_flip(~bg_flipx),
-    .dot_out(bg_dot),
-    .load(bg_load)
-);
+reg         bg_start_read;
+reg  [10:0] bg_read_y;
 
 IGS023_FG fg(
     .clk,
@@ -247,14 +163,30 @@ IGS023_FG fg(
     .vram_addr(fg_vram_addr),
     .vram_din(vram_din),
     .vram_master(fg_vram_master),
+    .rom_master(fg_rom_master),
     .rom_address(fg_rom_address),
     .rom_data(rom_data),
-    .rom_read(fg_rom_read),
-    .rom_ready(fg_rom_ready)
+    .rom_req(fg_rom_req),
+    .rom_ack(rom_ack)
 );
 
-wire [15:0] bg_addr           = 16'h0000;
-wire [15:0] bg_rowscroll_addr = 16'h7000;
+IGS023_BG bg(
+    .clk(clk),
+    .ce_pixel(ce_pixel),
+    .start_read(bg_start_read),
+    .scan_active(~(vblank | hblank)),
+    .x(bg_x[10:0]),
+    .y(bg_read_y),
+    .screen_y(logical_vcnt[7:0]),
+    .color_out(bg_color),
+    .vram_addr(bg_vram_addr),
+    .vram_din(vram_din),
+    .vram_master(bg_vram_master),
+    .rom_address(bg_rom_address),
+    .rom_data(rom_data),
+    .rom_req(bg_rom_req),
+    .rom_ack(rom_ack)
+);
 
 reg [12:0] color_addr;
 
@@ -267,55 +199,34 @@ always_ff @(posedge clk) begin
         hsync2 <= hsync; vid_hsync <= hsync2;
         hblank2 <= hblank; vid_hblank <= hblank2;
         if (~&fg_color[3:0])
-            color_addr <= 13'h1000 + { 3'd0, fg_color[8:4], fg_color[3:0], 1'b0 };
+            color_addr <= 13'h1000 + { 3'd0, fg_color[8:0], 1'b0 };
+        else if (~&bg_color[4:0])
+            color_addr <= 13'h0800 + { 2'd0, bg_color[9:0], 1'b0 };
         else
-            color_addr <= 13'h0800 + 62; // + { 2'd0, bg_dot, 1'b0 };
+            color_addr <= 13'h07fe;
     end
 end
 
 always_comb begin
-    bit [5:0] h;
-    bit [10:0] v;
-
-    vram_addr = fg_vram_addr;
+    vram_addr = fg_vram_master ? fg_vram_addr : bg_vram_addr;
     vram_we_n = 1;
 
     pal_addr  = color_addr;
     pal_we_l_n = 1;
     pal_we_u_n = 1;
 
-    v = 0;
-
-    access_state = idx_to_state[hcnt[4:0]];
-    next_access_state = idx_to_state[hcnt[4:0] + 5'd1];
-
-    if (~fg_vram_master) begin
-        unique case(access_state)
-            BG_ATTRIB0: begin
-                v = logical_vcnt[10:0] + bg_y[10:0];
-                vram_addr = bg_addr + { 2'b0, v[10:5], bg_load_hcnt[10:5], 2'b00 };
-            end
-
-            BG_ATTRIB1: begin
-                v = logical_vcnt[10:0] + bg_y[10:0];
-                vram_addr = bg_addr + { 2'b0, v[10:5], bg_load_hcnt[10:5], 2'b10 };
-            end
-
-            CPU_ACCESS: begin
-                if (is_vram_access && ram_access == 2'd2) begin
-                    vram_addr = {cpu_addr[14:1], 1'b0};
-                    vram_we_n = cpu_rw;
-                end else if (is_vram_access && ram_access == 2'd1) begin
-                    vram_addr = {cpu_addr[14:1], 1'b1};
-                    vram_we_n = cpu_rw;
-                end else if (is_pal_access && |ram_access) begin
-                    pal_addr = cpu_addr[12:0];
-                    pal_we_l_n = cpu_lds_n | cpu_rw;
-                    pal_we_u_n = cpu_uds_n | cpu_rw;
-                end
-            end
-            default: begin end
-        endcase
+    if (~fg_vram_master & ~bg_vram_master) begin
+        if (is_vram_access && ram_access == 2'd2) begin
+            vram_addr = {cpu_addr[14:1], 1'b0};
+            vram_we_n = cpu_rw;
+        end else if (is_vram_access && ram_access == 2'd1) begin
+            vram_addr = {cpu_addr[14:1], 1'b1};
+            vram_we_n = cpu_rw;
+        end else if (is_pal_access && |ram_access) begin
+            pal_addr = cpu_addr[12:0];
+            pal_we_l_n = cpu_lds_n | cpu_rw;
+            pal_we_u_n = cpu_uds_n | cpu_rw;
+        end
     end
 end
 
@@ -327,8 +238,6 @@ wire irq4_en = ctrl[14][2];
 
 reg [5:0] irq4_cnt;
 always @(posedge clk) begin
-    bit [10:0] v;
-    bit [5:0] h;
 
     if (reset) begin
         dtack_n <= 1;
@@ -385,80 +294,30 @@ always @(posedge clk) begin
         end
 
         if (ce_pixel) begin
-            bg_load <= 0;
-            unique case(access_state)
-                BG_ATTRIB0: bg_code <= vram_din;
-                BG_ATTRIB1: begin
-                    v = logical_vcnt[10:0] + bg_y[10:0];
-                    bg_attrib <= vram_din;
-                    bg_rom_address <= { bg_code[14:0], v[4:0], 4'd0 } + { 2'b0, bg_code[14:0], v[4:0], 2'd0 };
-                    bg_rom_req <= 5;
-                end
-
-                CPU_ACCESS: begin
-                    if (~fg_vram_master) begin
-                        if (is_vram_access) begin
-                            if (ram_access == 2'd2) begin
-                                cpu_dout[15:8] <= vram_din;
-                                ram_access <= 2'd1;
-                            end else if (ram_access == 2'd1) begin
-                                cpu_dout[7:0] <= vram_din;
-                                ram_access <= 0;
-                                dtack_n <= 0;
-                            end
-                        end else if (is_pal_access) begin
-                            if (|ram_access) begin
-                                ram_access <= 0;
-                                dtack_n <= 0;
-                                cpu_dout <= pal_din;
-                            end
-                        end
+            if (~fg_vram_master & ~bg_vram_master) begin
+                if (is_vram_access) begin
+                    if (ram_access == 2'd2) begin
+                        cpu_dout[15:8] <= vram_din;
+                        ram_access <= 2'd1;
+                    end else if (ram_access == 2'd1) begin
+                        cpu_dout[7:0] <= vram_din;
+                        ram_access <= 0;
+                        dtack_n <= 0;
+                    end
+                end else if (is_pal_access) begin
+                    if (|ram_access) begin
+                        ram_access <= 0;
+                        dtack_n <= 0;
+                        cpu_dout <= pal_din;
                     end
                 end
-                default: begin end
-            endcase
-
-            case(next_access_state)
-                CPU_ACCESS: begin
-                    if (ram_pending & ~fg_vram_master) begin
-                        ram_access <= 2'd2;
-                        ram_pending <= 0;
-                    end
-                end
-
-                BG_ATTRIB0: begin
-                    bg_load_hcnt <= (logical_hcnt + 11'd64) - bg_hofs;
-                end
-
-
-                default: begin
-                end
-            endcase
-        end // ce_pixel
-
-        if (rom_req == rom_ack) begin
-            fg_rom_ready <= 0;
-            if (rom_req_ch == 1) begin
-                bg_load <= bg_rom_req == 0;
-                bg_data <= { rom_data, bg_data[(32*5)-1:32] };
-                rom_req_ch <= 0;
-            end else if (rom_req_ch == 2) begin
-                rom_req_ch <= 0;
-                fg_rom_ready <= 1;
-            end else begin
-                if (fg_rom_read & ~fg_rom_ready) begin
-                    rom_address <= fg_rom_address;
-                    rom_req <= ~rom_req;
-                    rom_req_ch <= 2;
-                end else if (bg_rom_req != 0) begin
-                    rom_address <= bg_rom_address;
-                    bg_rom_address <= bg_rom_address + 4;
-                    rom_req <= ~rom_req;
-                    rom_req_ch <= 1;
-                    bg_rom_req <= bg_rom_req - 1;
-                 end
             end
-        end
+
+            if (ram_pending & ~fg_vram_master & ~bg_vram_master) begin
+                ram_access <= 2'd2;
+                ram_pending <= 0;
+            end
+        end // ce_pixel
     end
 
     ssbus.setup(SS_IDX, 16 + 32 + (256 * 8), 1);
