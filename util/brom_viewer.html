@@ -123,6 +123,19 @@ canvas {
   border: 1px solid #555;
 }
 .small { color: #aaa; font-size: 12px; }
+.palette-preview {
+  display: grid;
+  grid-template-columns: repeat(32, 10px);
+  gap: 1px;
+  align-items: center;
+}
+.palette-preview span {
+  display: block;
+  width: 10px;
+  height: 16px;
+  border: 1px solid #333;
+  box-sizing: border-box;
+}
 </style>
 </head>
 <body>
@@ -136,6 +149,9 @@ canvas {
       <div class="controls">
         <label for="fileInput">B-ROM file(s)</label>
         <input id="fileInput" type="file" multiple>
+
+        <label for="aromInput">A-ROM color file(s)</label>
+        <input id="aromInput" type="file" multiple>
 
         <label for="tolerance">Tolerance</label>
         <input id="tolerance" type="number" min="0" value="10">
@@ -186,13 +202,20 @@ canvas {
           <option value="msb">MSB first</option>
         </select>
       </label>
-      <label>Zero bits
+      <label>Pixels
         <select id="zeroMode">
-          <option value="black">black</option>
-          <option value="white">white</option>
-          <option value="transparent">transparent checker</option>
+          <option value="black">mask: zero black</option>
+          <option value="white">mask: zero white</option>
+          <option value="transparent">mask: zero checker</option>
+          <option value="arom-gray">A-ROM grayscale</option>
+          <option value="arom-color">A-ROM pseudo color</option>
+          <option value="arom-palette">A-ROM palette</option>
         </select>
       </label>
+      <label>Palette
+        <select id="paletteSelect"></select>
+      </label>
+      <div id="palettePreview" class="palette-preview" title="Selected palette from docs/pal.dump"></div>
       <label class="row">Zoom <input id="zoom" type="number" min="1" max="32" value="4"></label>
       <button id="downloadPng">Download PNG</button>
       <span class="small" id="imageInfo"></span>
@@ -208,6 +231,7 @@ canvas {
 'use strict';
 
 const fileInput = document.getElementById('fileInput');
+const aromInput = document.getElementById('aromInput');
 const parseBtn = document.getElementById('parseBtn');
 const statusEl = document.getElementById('status');
 const blockTable = document.getElementById('blockTable');
@@ -220,11 +244,15 @@ const widthMinus = document.getElementById('widthMinus');
 const widthPlus = document.getElementById('widthPlus');
 const bitOrderEl = document.getElementById('bitOrder');
 const zeroModeEl = document.getElementById('zeroMode');
+const paletteSelect = document.getElementById('paletteSelect');
+const palettePreview = document.getElementById('palettePreview');
 const zoomEl = document.getElementById('zoom');
 const imageInfoEl = document.getElementById('imageInfo');
 const downloadPng = document.getElementById('downloadPng');
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
+
+const BUILTIN_PALETTES = [{"name":"pal.dump 0","colors":[[0,16,0],[255,255,255],[172,41,0],[172,41,0],[230,82,0],[238,115,74],[255,156,106],[98,98,98],[164,164,164],[164,164,164],[213,213,213],[222,222,222],[90,41,0],[139,74,0],[205,115,0],[255,205,24],[255,230,164],[24,74,123],[8,98,164],[16,148,205],[65,180,222],[123,0,0],[180,16,16],[238,24,16],[246,98,0],[0,82,238],[0,115,238],[0,164,238],[0,213,238],[156,246,246],[230,255,255],[0,0,0]]},{"name":"pal.dump 1","colors":[[0,16,0],[255,255,255],[131,82,65],[131,82,65],[180,106,74],[238,156,106],[246,197,148],[98,98,98],[164,164,164],[164,164,164],[213,213,213],[222,222,222],[90,41,0],[139,74,0],[205,115,0],[255,205,24],[255,230,164],[24,74,123],[8,98,164],[16,148,205],[65,180,222],[123,0,0],[180,16,16],[238,24,16],[246,98,0],[0,82,238],[0,115,238],[0,164,238],[0,213,238],[156,246,246],[230,255,255],[0,0,0]]},{"name":"pal.dump 2","colors":[[0,16,0],[230,82,82],[139,0,0],[172,24,8],[197,65,32],[230,98,57],[255,139,106],[106,0,16],[139,8,49],[164,41,41],[189,57,65],[230,98,115],[90,41,0],[139,74,0],[205,115,0],[255,205,24],[255,230,164],[148,82,32],[205,115,0],[238,180,65],[255,230,98],[123,0,0],[180,16,16],[238,24,16],[246,98,0],[172,115,148],[189,131,156],[205,148,172],[222,172,189],[238,189,205],[255,213,222],[0,0,0]]},{"name":"pal.dump 3","colors":[[0,16,0],[255,255,255],[115,41,32],[189,74,49],[222,139,41],[255,213,115],[255,246,189],[0,98,98],[0,148,148],[123,180,180],[172,213,213],[238,238,238],[0,65,115],[24,90,172],[82,123,197],[172,189,255],[205,230,255],[98,16,0],[205,24,0],[255,49,32],[255,164,106],[123,41,0],[189,65,0],[230,139,82],[255,189,148],[106,98,213],[156,131,255],[172,156,246],[205,189,255],[230,222,255],[255,246,255],[0,0,0]]},{"name":"pal.dump 4","colors":[[255,255,255],[115,0,0],[189,0,0],[255,65,0],[255,156,0],[255,222,0],[255,255,148],[0,0,189],[0,65,255],[0,131,255],[0,205,255],[0,255,255],[180,255,255],[0,82,0],[0,148,0],[0,205,0],[0,255,0],[131,255,131],[213,255,205],[41,74,57],[74,115,106],[106,139,131],[139,156,156],[180,197,189],[213,222,222],[82,0,156],[123,32,197],[148,74,213],[180,115,230],[205,156,238],[238,213,255],[0,0,0]]},{"name":"pal.dump 5","colors":[[74,49,8],[90,65,16],[123,82,49],[172,90,16],[213,123,82],[230,172,115],[255,213,156],[0,49,74],[74,82,82],[106,115,115],[139,156,148],[156,180,172],[189,205,197],[213,230,222],[238,255,246],[172,106,16],[213,156,82],[255,205,106],[255,246,156],[148,8,8],[213,41,41],[255,82,90],[255,148,148],[123,222,49],[139,180,65],[90,156,41],[82,115,32],[65,90,24],[255,246,0],[255,180,0],[0,255,0],[0,0,0]]},{"name":"pal.dump 6","colors":[[0,65,57],[0,90,65],[0,148,82],[123,189,82],[156,255,106],[82,74,65],[164,115,90],[255,164,115],[255,230,180],[90,0,82],[123,41,123],[156,106,156],[205,156,189],[255,213,230],[255,255,139],[222,189,90],[180,156,49],[123,98,16],[106,82,0],[255,213,106],[222,148,0],[180,82,0],[148,0,0],[106,0,0],[115,65,82],[180,90,106],[222,148,131],[222,189,156],[230,213,197],[255,230,222],[255,255,255],[0,0,0]]},{"name":"pal.dump 7","colors":[[65,49,32],[82,65,41],[98,82,49],[123,98,65],[164,123,74],[189,164,98],[222,197,115],[32,32,32],[49,49,49],[74,74,74],[98,98,90],[123,123,115],[164,172,164],[189,197,189],[8,8,8],[57,41,32],[82,57,49],[115,65,57],[148,82,74],[180,123,98],[205,164,106],[0,32,57],[8,49,74],[24,65,90],[49,90,115],[74,115,172],[115,164,205],[172,213,238],[255,230,148],[230,246,246],[131,164,74],[0,0,0]]},{"name":"pal.dump 8","colors":[[255,255,255],[8,8,8],[255,156,0],[255,222,0],[255,255,156],[0,205,255],[32,246,255],[139,255,255],[24,238,0],[139,255,131],[205,255,180],[189,123,222],[222,164,246],[255,213,255],[115,0,0],[189,0,0],[255,0,0],[57,16,0],[98,24,0],[156,49,0],[246,148,0],[255,222,0],[41,24,0],[57,32,0],[90,49,0],[123,74,0],[148,98,0],[180,139,0],[222,197,0],[255,255,0],[255,255,164],[0,0,0]]},{"name":"pal.dump 9","colors":[[255,0,0],[255,255,0],[255,49,0],[255,98,0],[255,156,0],[255,205,0],[255,255,0],[255,49,0],[255,98,0],[255,156,0],[255,205,0],[255,255,0],[255,49,0],[255,98,0],[255,156,0],[255,205,0],[255,255,0],[255,98,0],[255,156,0],[255,205,0],[255,255,0],[255,98,0],[255,156,0],[255,205,0],[255,255,0],[255,0,0],[255,49,0],[255,98,0],[255,156,0],[255,205,0],[255,255,0],[0,0,0]]}];
 
 let words = [];
 let blocks = [];
@@ -232,6 +260,8 @@ let selectedIndex = -1;
 let loadedBytes = 0;
 let blockWidths = [];
 let loadedNames = [];
+let aromBytes = new Uint8Array(0);
+let aromNames = [];
 
 function hex(value, digits) {
   return '0x' + (value >>> 0).toString(16).padStart(digits, '0');
@@ -301,15 +331,15 @@ function parseBlocks(words, tolerance = 10, minDataWords = 1, maxDataWords = 500
   return {blocks: parsed, failures};
 }
 
-async function loadFiles(files) {
+async function concatFiles(files) {
   const buffers = [];
   let total = 0;
-  loadedNames = [];
+  const names = [];
   for (const file of files) {
     const buf = await file.arrayBuffer();
     buffers.push(new Uint8Array(buf));
     total += buf.byteLength;
-    loadedNames.push(file.name);
+    names.push(file.name);
   }
   const data = new Uint8Array(total);
   let off = 0;
@@ -317,6 +347,13 @@ async function loadFiles(files) {
     data.set(b, off);
     off += b.length;
   }
+  return {data, names};
+}
+
+async function loadFiles(files) {
+  const loaded = await concatFiles(files);
+  const data = loaded.data;
+  loadedNames = loaded.names;
   loadedBytes = data.length;
   const wordCount = Math.floor(data.length / 2);
   const out = new Array(wordCount);
@@ -324,6 +361,98 @@ async function loadFiles(files) {
     out[i] = data[i * 2] | (data[i * 2 + 1] << 8);
   }
   return out;
+}
+
+async function loadAromFiles(files) {
+  if (!files.length) {
+    aromBytes = new Uint8Array(0);
+    aromNames = [];
+    return;
+  }
+  const loaded = await concatFiles(files);
+  aromBytes = loaded.data;
+  aromNames = loaded.names;
+}
+
+function readAromColor(startAddr, pixelOrdinal) {
+  if (!aromBytes.length) return null;
+
+  // B-ROM start/end addresses advance by 4 for every 3 sprite pixels.
+  // The hardware drops the low two start-address bits, then reads 5-bit
+  // color indices packed three per little-endian 16-bit A-ROM word.
+  const wordIndex = (startAddr >>> 2) + Math.floor(pixelOrdinal / 3);
+  const byteOffset = wordIndex * 2;
+  if (byteOffset + 1 >= aromBytes.length) return null;
+
+  const word = aromBytes[byteOffset] | (aromBytes[byteOffset + 1] << 8);
+  const sub = pixelOrdinal % 3;
+  return (word >> (sub * 5)) & 0x1f;
+}
+
+function colorFromIndex(index, mode) {
+  if (index == null) return [255, 0, 255];
+  if (mode === 'arom-gray') {
+    const v = Math.round(index * 255 / 31);
+    return [v, v, v];
+  }
+  if (mode === 'arom-palette') {
+    const pal = BUILTIN_PALETTES[Number(paletteSelect.value) || 0];
+    return pal ? pal.colors[index & 31] : [255, 0, 255];
+  }
+
+  // Stable pseudo-color palette for visualizing 5-bit sprite color indices
+  // without needing the game's palette RAM.
+  const hue = (index * 47) % 360;
+  const sat = 0.72;
+  const light = 0.34 + ((index >> 3) & 1) * 0.18 + ((index >> 4) & 1) * 0.10;
+  return hslToRgb(hue / 360, sat, Math.min(light, 0.72));
+}
+
+function updatePalettePreview() {
+  const pal = BUILTIN_PALETTES[Number(paletteSelect.value) || 0];
+  palettePreview.textContent = '';
+  if (!pal) return;
+  const frag = document.createDocumentFragment();
+  pal.colors.forEach(([r, g, b], i) => {
+    const swatch = document.createElement('span');
+    swatch.style.background = `rgb(${r}, ${g}, ${b})`;
+    swatch.title = `${i}: rgb(${r}, ${g}, ${b})`;
+    frag.appendChild(swatch);
+  });
+  palettePreview.appendChild(frag);
+}
+
+function initPalettes() {
+  paletteSelect.textContent = '';
+  BUILTIN_PALETTES.forEach((pal, i) => {
+    const option = document.createElement('option');
+    option.value = String(i);
+    option.textContent = pal.name;
+    paletteSelect.appendChild(option);
+  });
+  updatePalettePreview();
+}
+
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) {
+    r = g = b = l;
+  } else {
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1 / 3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1 / 3);
+  }
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
 }
 
 function renderBlockTable() {
@@ -424,31 +553,37 @@ function renderSelectedBlock() {
   const bitOrder = bitOrderEl.value;
   const zeroMode = zeroModeEl.value;
 
+  let visiblePixelOrdinal = 0;
   for (let bitIndex = 0; bitIndex < width * height; bitIndex++) {
     const wordIndex = Math.floor(bitIndex / 16);
     const bitInWord = bitIndex & 15;
     const p = bitIndex * 4;
+    const x = bitIndex % width;
+    const y = Math.floor(bitIndex / width);
+    const checker = ((x >> 3) ^ (y >> 3)) & 1;
 
     let r = 48, g = 48, bl = 48, a = 255;
     if (wordIndex < b.data_words) {
       const w = words[b.data_start + wordIndex];
       const bitPos = bitOrder === 'lsb' ? bitInWord : (15 - bitInWord);
       const bit = (w >> bitPos) & 1;
-      const x = bitIndex % width;
-      const y = Math.floor(bitIndex / width);
-      const checker = ((x >> 3) ^ (y >> 3)) & 1;
 
       if (bit === 0) {
-        if (zeroMode === 'white') {
+        if (zeroMode === 'arom-gray' || zeroMode === 'arom-color' || zeroMode === 'arom-palette') {
+          [r, g, bl] = colorFromIndex(readAromColor(b.start_addr, visiblePixelOrdinal), zeroMode);
+        } else if (zeroMode === 'white') {
           r = g = bl = 255;
         } else if (zeroMode === 'transparent') {
           r = g = bl = checker ? 86 : 58;
         } else {
           r = g = bl = 0;
         }
+        visiblePixelOrdinal++;
       } else {
         if (zeroMode === 'white') {
           r = g = bl = 0;
+        } else if (zeroMode === 'arom-gray' || zeroMode === 'arom-color' || zeroMode === 'arom-palette') {
+          r = g = bl = checker ? 42 : 28;
         } else {
           r = g = bl = 255;
         }
@@ -476,6 +611,7 @@ async function parseSelectedFiles() {
 
   statusEl.textContent = 'Loading...';
   words = await loadFiles(fileInput.files);
+  await loadAromFiles(aromInput.files);
   const tolerance = Number(document.getElementById('tolerance').value) || 10;
   const minData = Number(document.getElementById('minData').value) || 1;
   const maxData = Number(document.getElementById('maxData').value) || 5000;
@@ -485,8 +621,14 @@ async function parseSelectedFiles() {
   selectedIndex = blocks.length ? 0 : -1;
 
   let msg = '';
-  msg += loadedNames.length === 1 ? `File: ${loadedNames[0]}\n` : `Files: ${loadedNames.join(', ')}\n`;
-  msg += `${loadedBytes} bytes, ${words.length} words\n`;
+  msg += loadedNames.length === 1 ? `B-ROM: ${loadedNames[0]}\n` : `B-ROMs: ${loadedNames.join(', ')}\n`;
+  msg += `${loadedBytes} B-ROM bytes, ${words.length} words\n`;
+  if (aromBytes.length) {
+    msg += aromNames.length === 1 ? `A-ROM: ${aromNames[0]}\n` : `A-ROMs: ${aromNames.join(', ')}\n`;
+    msg += `${aromBytes.length} A-ROM bytes\n`;
+  } else {
+    msg += `A-ROM: none\n`;
+  }
   msg += `Blocks: ${blocks.length}\n`;
   msg += `Skipped positions: ${result.failures.length}`;
   if (blocks.length) {
@@ -506,6 +648,13 @@ parseBtn.addEventListener('click', () => parseSelectedFiles().catch(err => {
   statusEl.textContent = `Error: ${err.message || err}`;
 }));
 
+aromInput.addEventListener('change', () => loadAromFiles(aromInput.files).then(() => {
+  renderSelectedBlock();
+}).catch(err => {
+  console.error(err);
+  statusEl.textContent = `Error loading A-ROM: ${err.message || err}`;
+}));
+
 prevBlock.addEventListener('click', () => stepBlock(-1));
 nextBlock.addEventListener('click', () => stepBlock(1));
 blockIndexEl.addEventListener('change', () => selectBlock(Number(blockIndexEl.value) || 0, true));
@@ -523,6 +672,10 @@ document.addEventListener('keydown', (ev) => {
 widthEl.addEventListener('change', () => setCurrentWidth(Number(widthEl.value) || 16));
 bitOrderEl.addEventListener('change', renderSelectedBlock);
 zeroModeEl.addEventListener('change', renderSelectedBlock);
+paletteSelect.addEventListener('change', () => {
+  updatePalettePreview();
+  renderSelectedBlock();
+});
 zoomEl.addEventListener('change', renderSelectedBlock);
 widthMinus.addEventListener('click', () => stepWidth(-16));
 widthPlus.addEventListener('click', () => stepWidth(16));
@@ -534,6 +687,7 @@ downloadPng.addEventListener('click', () => {
   a.click();
 });
 
+initPalettes();
 renderSelectedBlock();
 </script>
 </body>

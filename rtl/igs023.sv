@@ -415,6 +415,7 @@ always @(posedge clk) begin
                 ssbus.read_response(SS_IDX, { 48'b0, ctrl[ssbus.addr[3:0]] });
             end else begin
                 //ssbus.read_response(SS_IDX, { 48'b0, sprite_data[ssbus.addr - 48] });
+                ssbus.read_response(SS_IDX, 64'b0); // TODO
             end
         end
     end

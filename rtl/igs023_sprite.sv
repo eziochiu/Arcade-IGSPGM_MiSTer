@@ -134,7 +134,7 @@ reg [10:0] pixel_next;
 reg [10:0] pixel_color;
 reg [7:0] draw_line;
 arom_offset_t pixel_offset;
-wire line_writable;
+wire buffer_ready;
 
 // tmp_* are temporary
 // spr_* are immutable per sprite values
@@ -151,7 +151,7 @@ always_ff @(posedge clk) begin
     end else begin
         pixel_wr <= 0;
 
-        if (pixel_wr) pixel_column <= pixel_next;
+        pixel_column <= pixel_next;
 
         if (spr_load) begin
             spr_x <= sprite_d0[sprite_index][10:0];
@@ -292,23 +292,20 @@ always_ff @(posedge clk) begin
             end
 
             DRAW_INIT: begin
-                draw_line <= 0;
-                dma_state <= DRAW_LINE_WAIT;
-            end
-
-            DRAW_LINE_WAIT: begin
                 sprite_index <= 0;
-                if (draw_line == 224) begin
-                    dma_state <= DMA_IDLE;
-                end else if (line_writable) begin
-                    dma_state <= DRAW_SEARCH_ACTIVE_LOAD;
-                end
+                draw_line <= 0;
+                dma_state <= DRAW_SEARCH_ACTIVE_LOAD;
             end
 
             DRAW_SEARCH_ACTIVE_LOAD: begin
                 if (sprite_index == sprite_count) begin
                     draw_line <= draw_line + 1;
-                    dma_state <= DRAW_LINE_WAIT;
+                    sprite_index <= 0;
+                    if (draw_line == 224) begin
+                        dma_state <= DMA_IDLE;
+                    end else begin
+                        dma_state <= DRAW_SEARCH_ACTIVE_LOAD; // load correct sprite index
+                    end
                 end else begin
                     dma_state <= DRAW_SEARCH_ACTIVE_CHECK;
                 end
@@ -339,26 +336,28 @@ always_ff @(posedge clk) begin
             end
 
             DRAW_SPAN: begin
-                if (~tmp_shifter[0]) begin
-                    pixel_color <= { spr_prio, spr_palette, 5'b0 };
-                    pixel_offset <= spr.arom_offset;
-                    pixel_wr <= 1;
-                    spr.arom_offset <= add_offset(spr.arom_offset, 1);
-                end
-                
-                pixel_next <= pixel_next + 1;
-                tmp_shifter <= { 1'b0, tmp_shifter[15:1] };
-                tmp_shift_count <= tmp_shift_count + 1;
-                
-                if (&tmp_shift_count) begin
-                    spr.brom_offset <= spr.brom_offset + 1;
-                    tmp_x <= tmp_x + 1;
-                    if (spr.brom_offset[1:0] == 2'b11) begin
-                        brom_word_address <= spr_brom_addr + spr.brom_offset + 1;
-                        brom_req <= ~brom_req;
-                        dma_state <= DRAW_BROM_WAIT;
-                    end else begin
-                        dma_state <= DRAW_ROW;
+                if (buffer_ready) begin
+                    if (~tmp_shifter[0]) begin
+                        pixel_color <= { spr_prio, spr_palette, 5'b0 };
+                        pixel_offset <= spr.arom_offset;
+                        pixel_wr <= pixel_next < 448;
+                        spr.arom_offset <= add_offset(spr.arom_offset, 1);
+                    end
+                    
+                    pixel_next <= pixel_next + 1;
+                    tmp_shifter <= { 1'b0, tmp_shifter[15:1] };
+                    tmp_shift_count <= tmp_shift_count + 1;
+                    
+                    if (&tmp_shift_count) begin
+                        spr.brom_offset <= spr.brom_offset + 1;
+                        tmp_x <= tmp_x + 1;
+                        if (spr.brom_offset[1:0] == 2'b11) begin
+                            brom_word_address <= spr_brom_addr + spr.brom_offset + 1;
+                            brom_req <= ~brom_req;
+                            dma_state <= DRAW_BROM_WAIT;
+                        end else begin
+                            dma_state <= DRAW_ROW;
+                        end
                     end
                 end
             end
@@ -392,7 +391,7 @@ IGS023_Buffer line_buffer(
     .clk,
     .ce_pixel,
     .scan_active,
-    .frame_reset,
+    .frame_reset(dma_state == DRAW_INIT),
     .next_line,
 
     .scan_color(color_out),
@@ -403,7 +402,7 @@ IGS023_Buffer line_buffer(
     .palette(pixel_color[9:5]),
     .arom_offset(pixel_offset),
     .line(draw_line),
-    .line_writable,
+    .ready(buffer_ready),
 
     .ddr(ddr)
 );

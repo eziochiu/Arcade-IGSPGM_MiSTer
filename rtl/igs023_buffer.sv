@@ -10,19 +10,19 @@ module IGS023_Buffer(
 
     output logic [11:0] scan_color,
 
-    input wr,
+    input       wr,
+    output      ready,
     input [8:0] column,
+    input [7:0] line,
     input [4:0] palette,
     input       prio,
     input       arom_offset_t arom_offset,
 
-    input [7:0] line,
-    output line_writable,
 
     ddr_if.to_host ddr
 );
 
-localparam int NUM_LINE_BUFFERS = 8;
+localparam int NUM_LINE_BUFFERS = 8'd8;
 localparam int LINE_BUF_BITS = $clog2(NUM_LINE_BUFFERS);
 
 initial begin
@@ -41,7 +41,7 @@ typedef struct packed
     logic                 prio;
     logic [4:0]           palette;
     logic [8:0]           column;
-    logic [LINE_BUF_BITS-1:0] line;
+    logic [7:0] line;
 } write_entry_t;
 
 write_entry_t wq_in;
@@ -53,38 +53,41 @@ assign wq_in.palette = palette;
 assign wq_in.arom_offset = arom_offset;
 assign wq_in.prio = prio;
 assign wq_in.column = column;
-assign wq_in.line = line[LINE_BUF_BITS-1:0];
+assign wq_in.line = line;
 assign wq_cur = wq_fifo0;
 
-reg [12:0] write_queue_head = 0;
-reg [12:0] write_queue_tail = 0;
-reg [12:0] write_queue_fetch = 0;
+reg [13:0] write_queue_head = 0;
+reg [13:0] write_queue_tail = 0;
+reg [13:0] write_queue_fetch = 0;
 reg        write_queue_fetch_pending = 0;
 reg  [1:0] write_queue_fifo_count = 0;
+
+assign ready = (write_queue_head - write_queue_tail) < 8190;
 
 dualport_ram_unreg #(.WIDTH($bits(write_entry_t)), .WIDTHAD(13)) write_queue(
     .clock_a(clk),
     .wren_a(wr),
-    .address_a(write_queue_head),
+    .address_a(write_queue_head[12:0]),
     .data_a(wq_in),
     .q_a(),
 
     .clock_b(clk),
     .wren_b(0),
-    .address_b(write_queue_fetch),
+    .address_b(write_queue_fetch[12:0]),
     .data_b(0),
     .q_b(wq_fetch_data)
 );
 
 
 reg [8:0] scan_column;
-reg [LINE_BUF_BITS-1:0] scan_buffer;
+reg [7:0] scan_line;
+
 
 always_ff @(posedge clk) begin
     if (frame_reset) begin
-        scan_buffer <= NUM_LINE_BUFFERS - 1;
+        scan_line <= 8'hff;
     end else if (next_line) begin
-        scan_buffer <= scan_buffer + 1;
+        scan_line <= scan_line + 1;
         scan_column <= 0;
     end
 
@@ -178,7 +181,7 @@ always_ff @(posedge clk) begin
 
         case(queue_state)
             IDLE: begin
-                if (queue_valid) begin
+                if (queue_valid & line_writable) begin
                     if (ddr_cache_hit) begin
                         line_wr <= 1;
                         line_wr_entry <= wq_cur;
@@ -254,8 +257,10 @@ always_ff @(posedge clk) begin
     end
 end
 
-wire [LINE_BUF_BITS-1:0] erase_buffer = scan_buffer - 1'b1;
-assign line_writable = (line[LINE_BUF_BITS-1:0] != scan_buffer) && (line[LINE_BUF_BITS-1:0] != erase_buffer);
+wire [7:0] free_line_begin = scan_line + 8'd1;
+wire [7:0] free_line_end = scan_line + 8'(NUM_LINE_BUFFERS) - 8'd1;
+wire line_writable = (wq_cur.line >= free_line_begin) && (wq_cur.line < free_line_end);
+wire [7:0] erase_line = scan_line - 8'b1;
 
 logic [NUM_LINE_BUFFERS-1:0] buf_wr;
 logic [8:0] buf_addr[NUM_LINE_BUFFERS];
@@ -281,12 +286,12 @@ always_comb begin
         buf_addr[i] = queue_valid ? wq_cur.column : 9'd0;
     end
 
-    buf_wr[erase_buffer] = 1;
-    buf_data[erase_buffer] = 0;
-    buf_addr[erase_buffer] = scan_column;
+    buf_wr[erase_line] = 1;
+    buf_data[erase_line] = 0;
+    buf_addr[erase_line] = scan_column;
 
-    buf_addr[scan_buffer] = scan_column;
-    scan_color = buf_q[scan_buffer];
+    buf_addr[scan_line] = scan_column;
+    scan_color = buf_q[scan_line];
 
     if (line_wr) begin
         buf_addr[line_wr_entry.line] = line_wr_entry.column;

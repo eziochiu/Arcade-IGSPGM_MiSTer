@@ -20,50 +20,139 @@ static void init()
     frame_count = 0;
 }
 
+typedef struct
+{
+    u32 address;
+    u16 width;
+    u16 height;
+} SpriteDef;
+
+static const SpriteDef box_trans_16x16  = { 0x00837530,  16, 16 };
+static const SpriteDef box_opaque_16x16 = { 0x00837200,  16, 16 };
+static const SpriteDef box_trans_32x8  = { 0x00837530,  32, 8 };
+static const SpriteDef box_opaque_32x8 = { 0x00837200,  32, 8 };
+static const SpriteDef box_opaque_32x16 = { 0x00837178,  32, 16 };
+static const SpriteDef drop_shadow_16   = { 0x0083b330,  16, 9  };
+static const SpriteDef drop_shadow_32   = { 0x0083b34a,  32, 11 };
+static const SpriteDef drop_shadow_48   = { 0x0083b37e,  48, 13 };
+static const SpriteDef drop_shadow_64   = { 0x0083b3d4,  64, 13 };
+static const SpriteDef drop_shadow_80   = { 0x0083b444,  80, 13 };
+static const SpriteDef drop_shadow_96   = { 0x0083b4ce,  96, 13 };
+static const SpriteDef oval_80          = { 0x00a25226,  80, 17 };
+static const SpriteDef dude_128         = { 0x0053b52e, 128, 90 };
+static const SpriteDef knight_240       = { 0x00533c5c, 240, 123 };
+
+void SpriteEndMarker(u8 idx)
+{
+    IGS023Sprite *spr = &SPRITE_BUFFER[idx];
+    spr->unk2 = 0;
+    spr->width = 0;
+    spr->height = 0;
+}
+
+static u8 sprite_x_scale = 0x10;
+static u8 sprite_y_scale = 0x10;
+
+void SpriteSimple(u8 idx, const SpriteDef *def, u8 color, s16 x, s16 y)
+{
+    IGS023Sprite *spr = &SPRITE_BUFFER[idx];
+    memset(spr, 0, sizeof(IGS023Sprite));
+
+    spr->height = def->height;
+    spr->width = def->width >> 4;
+    spr->address_lo = def->address >> 1;
+    spr->address_hi = (def->address >> 17);
+    spr->xscale_mode = sprite_x_scale >> 4;
+    spr->yscale_mode = sprite_y_scale >> 4;
+    spr->xscale_table = sprite_x_scale & 0xf;
+    spr->yscale_table = sprite_y_scale & 0xf;
+    spr->xpos = x;
+    spr->ypos = y;
+    spr->color = color;
+}
+
+static u8 mode = 0;
+static u8 count = 0;
+
 static void update()
 {
     IGS023_CTRL_OR(IGS023_CTRL_DMA);
-    for( int i = 0; i < 32; i++ )
-        IGS023_ZOOM[i] = 0x5555;
 
     u32 vblank_count = igs023_wait_vblank();
-
-    for( int i = 0; i < 32; i++ )
-        IGS023_ZOOM[i] = 0x5555;
 
     text_color(1);
     text_cursor(3, 2);
     textf("VBL: %05X  FRAME: %05X\n", vblank_count, frame_count);
 
-    IGS023Sprite *spr = SPRITE_BUFFER;
-
-    spr->color = 0;
-    spr->height = 89;
-    spr->width = 10;
-    spr->prio = 0;
-    spr->xflip = 0;
-    spr->yflip = 0;
-    spr->xscale_mode = 1;
-    spr->xscale_table = 0;
-    spr->yscale_mode = 1;
-    spr->yscale_table = 0;
-    spr->address_lo = 0;
-    spr->address_hi = 0;
-    spr->xpos = 100;
-    spr->ypos = 50;
-    spr->unk1 = 0;
-    spr->unk2 = 0;
-    spr->unk3 = 0;
-
-    spr++;
-    spr->unk2 = 0;
-    spr->width = 0;
-    spr->height = 0;
-    
-    IGS023_CTRL_OR(IGS023_CTRL_DMA);
 
     gui_begin(3, 4);
+    bool changed = gui_u8("MODE", &mode, 0, 6);
+    changed |= gui_u8("COUNT", &count, 1, 255);
+    changed |= gui_u8("SX", &sprite_x_scale, 0, 31);
+    changed |= gui_u8("SY", &sprite_y_scale, 0, 31);
     gui_end();
+
+    if (changed)
+    {
+        switch(mode)
+        {
+            case 0:
+                for( int i = 0; i < count; i++ )
+                {
+                    SpriteSimple(i, &box_opaque_16x16, 2 + (i % 2), i * 2, 50);
+                }
+                SpriteEndMarker(count);
+                break;
+
+            case 1:
+                for( int i = 0; i < count; i++ )
+                {
+                    SpriteSimple(i, &box_opaque_32x8, i % 2, i * 2, 50);
+                }
+                SpriteEndMarker(count);
+                break;
+
+            case 2:
+                for( int i = 0; i < count; i++ )
+                {
+                    SpriteSimple(i, &box_trans_16x16, i % 2, i * 2, 50);
+                }
+                SpriteSimple(count - 1, &box_opaque_16x16, 0, (count - 1) * 2, 50);
+                SpriteEndMarker(count);
+                break;
+
+            case 3:
+                for( int i = 0; i < count; i++ )
+                {
+                    SpriteSimple(i, &box_trans_32x8, i % 2, i * 8, 50);
+                }
+                SpriteSimple(count - 1, &box_opaque_32x8, 0, (count - 1) * 2, 50);
+                SpriteEndMarker(count);
+                break;
+
+            case 4:
+                for( int i = 0; i < count; i++ )
+                {
+                    SpriteSimple(i, &knight_240, 0, i * 8, 50);
+                }
+                SpriteEndMarker(count);
+                break;
+
+            case 5:
+                for( int i = 0; i < count; i++ )
+                {
+                    SpriteSimple(i, &dude_128, 0, i * 8, 50);
+                }
+                SpriteEndMarker(count);
+                break;
+
+
+
+            default:
+                SpriteEndMarker(0);
+                break;
+        }
+    }
 }
 
 PAGE_REGISTER(sprite_test, init, update, NULL);

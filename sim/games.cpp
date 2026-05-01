@@ -197,6 +197,7 @@ static void LoadPgmTest()
     LoadBasePgmBios();
     ClearCartConfig();
     gSimCore.mSDRAM->LoadData("pgm_b0600.u6", CART_B_ROM_SDR_BASE, 1);
+    gSimCore.mSDRAM->LoadData("pgm_b0601.u8", CART_B_ROM_SDR_BASE + 0x0800000, 1);
     gSimCore.mDDRMemory->LoadData("pgm_a0600.u1", CART_A_ROM_DDR_BASE, 1);
     gSimCore.mDDRMemory->LoadData("pgm_a0601.u3", CART_A_ROM_DDR_BASE + 0x0800000, 1);
     gSimCore.mDDRMemory->LoadData("pgm_a0602.u5", CART_A_ROM_DDR_BASE + 0x1000000, 1);
